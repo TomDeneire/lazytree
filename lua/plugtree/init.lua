@@ -36,13 +36,22 @@ local function parse_file(filepath)
             end
         end
 
-        -- Match plugin name on this line (owner/repo format or dir = "path")
+        -- Match plugin name on this line
+        -- Supports: "owner/repo", dir = "path", url = "https://..."
         local name = line:match(plugin_pattern)
         if not name then
             local dir_path = line:match("dir%s*=%s*['\"]([^'\"]+)['\"]")
             if dir_path then
-                -- Use the last directory component as the display name
                 name = dir_path:match("([^/]+)$") or dir_path
+            end
+        end
+        if not name then
+            local url = line:match("url%s*=%s*['\"]([^'\"]+)['\"]")
+            if url then
+                -- Extract owner/repo from URL (e.g. https://github.com/owner/repo.git)
+                name = url:match("([%w_%-%.]+/[%w_%-%.]+)%.git$")
+                    or url:match("([%w_%-%.]+/[%w_%-%.]+)$")
+                    or url:match("([^/]+)$")
             end
         end
         if name then
