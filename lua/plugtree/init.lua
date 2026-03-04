@@ -108,7 +108,7 @@ function M.render(scan_data)
     for _, entry in ipairs(scan_data) do
         -- File heading
         lines[#lines + 1] = entry.file
-        meta[#lines] = nil -- heading line, no navigation
+        meta[#lines] = { file = entry.abs, lnum = 1 }
 
         -- Separate main plugins and their dependencies
         -- Group: each main plugin followed by deps until the next main plugin
@@ -255,7 +255,7 @@ function M.open()
             vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeSeparator", row, 0, -1)
         elseif line == "Keybindings: e = open file at line | q = close" then
             vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeFooter", row, 0, -1)
-        elseif meta[i] then
+        elseif meta[i] and line:match("^[├└│ ]") then
             -- Plugin line: highlight tree glyphs and line number
             local glyph_end = line:find("[%w]") or 0
             if glyph_end > 1 then
@@ -265,7 +265,7 @@ function M.open()
             if colon_pos then
                 vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeLineNr", row, colon_pos - 1, -1)
             end
-        elseif line ~= "" and not meta[i] then
+        elseif meta[i] and not line:match("^[├└│ ]") then
             -- File heading line
             vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeFile", row, 0, -1)
         end
