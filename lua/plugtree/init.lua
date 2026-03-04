@@ -36,8 +36,15 @@ local function parse_file(filepath)
             end
         end
 
-        -- Match plugin name on this line
+        -- Match plugin name on this line (owner/repo format or dir = "path")
         local name = line:match(plugin_pattern)
+        if not name then
+            local dir_path = line:match("dir%s*=%s*['\"]([^'\"]+)['\"]")
+            if dir_path then
+                -- Use the last directory component as the display name
+                name = dir_path:match("([^/]+)$") or dir_path
+            end
+        end
         if name then
             results[#results + 1] = { name = name, line = i, is_dep = in_deps }
         end
