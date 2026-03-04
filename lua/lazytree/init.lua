@@ -73,7 +73,7 @@ function M.scan()
 
     local f = io.open(init_path, "r")
     if not f then
-        vim.notify("PlugTree: cannot read " .. init_path, vim.log.levels.ERROR)
+        vim.notify("LazyTree: cannot read " .. init_path, vim.log.levels.ERROR)
         return {}
     end
     local init_content = f:read("*a")
@@ -146,15 +146,24 @@ function M.scan()
 end
 
 --- Render scan data into display lines and a metadata table.
---- Returns (lines, meta) where meta[line_number] = { file, lnum } or nil.
+--- Returns (lines, meta, header_count) where meta[line_number] = { file, lnum } or nil.
 function M.render(scan_data)
     local lines = {}
     local meta = {}
 
     -- Header
-    lines[#lines + 1] = "PlugTree — Plugin Map"
-    lines[#lines + 1] = string.rep("═", 40)
-    lines[#lines + 1] = ""
+    local header = {
+        "  _                    _____              ",
+        " | |    __ _ _____   _|_   _| __ ___  ___ ",
+        " | |   / _` |_  / | | | | || '__/ _ \\/ _ \\",
+        " | |__| (_| |/ /| |_| | | || | |  __/  __/",
+        " |_____\\__,_/___|\\__, | |_||_|  \\___|\\___|",
+        "                 |___/                     ",
+        "",
+    }
+    for _, h in ipairs(header) do
+        lines[#lines + 1] = h
+    end
 
     for _, entry in ipairs(scan_data) do
         -- File heading
@@ -204,18 +213,18 @@ function M.render(scan_data)
     -- Footer
     lines[#lines + 1] = "Keybindings: e = open file at line | q = close"
 
-    return lines, meta
+    return lines, meta, #header
 end
 
---- Open the PlugTree buffer in a vertical split.
+--- Open the LazyTree buffer in a vertical split.
 function M.open()
     local scan_data = M.scan()
     if #scan_data == 0 then
-        vim.notify("PlugTree: no plugins found", vim.log.levels.WARN)
+        vim.notify("LazyTree: no plugins found", vim.log.levels.WARN)
         return
     end
 
-    local lines, meta = M.render(scan_data)
+    local lines, meta, header_lines = M.render(scan_data)
 
     -- Create scratch buffer
     local buf = vim.api.nvim_create_buf(false, true)
@@ -233,7 +242,7 @@ function M.open()
     vim.api.nvim_win_set_buf(win, buf)
 
     -- Set filetype
-    vim.api.nvim_set_option_value("filetype", "plugtree", { buf = buf })
+    vim.api.nvim_set_option_value("filetype", "lazytree", { buf = buf })
 
     -- Keymaps
     vim.keymap.set("n", "e", function()
@@ -282,43 +291,40 @@ function M.open()
                 vim.api.nvim_win_close(float_win, true)
             end, { buffer = float_buf, nowait = true })
         end
-    end, { buffer = buf, nowait = true, desc = "PlugTree: open file at line" })
+    end, { buffer = buf, nowait = true, desc = "LazyTree: open file at line" })
 
     vim.keymap.set("n", "q", function()
         vim.api.nvim_win_close(win, true)
-    end, { buffer = buf, nowait = true, desc = "PlugTree: close" })
+    end, { buffer = buf, nowait = true, desc = "LazyTree: close" })
 
     -- Highlights
-    vim.api.nvim_set_hl(0, "PlugTreeHeader", { bold = true, link = "Title" })
-    vim.api.nvim_set_hl(0, "PlugTreeSeparator", { link = "Comment" })
-    vim.api.nvim_set_hl(0, "PlugTreeFile", { bold = true, link = "Directory" })
-    vim.api.nvim_set_hl(0, "PlugTreeGlyph", { link = "NonText" })
-    vim.api.nvim_set_hl(0, "PlugTreeLineNr", { link = "LineNr" })
-    vim.api.nvim_set_hl(0, "PlugTreeFooter", { link = "Comment" })
+    vim.api.nvim_set_hl(0, "LazyTreeHeader", { bold = true, link = "Title" })
+    vim.api.nvim_set_hl(0, "LazyTreeFile", { bold = true, link = "Directory" })
+    vim.api.nvim_set_hl(0, "LazyTreeGlyph", { link = "NonText" })
+    vim.api.nvim_set_hl(0, "LazyTreeLineNr", { link = "LineNr" })
+    vim.api.nvim_set_hl(0, "LazyTreeFooter", { link = "Comment" })
 
     -- Apply highlights
-    local ns = vim.api.nvim_create_namespace("plugtree")
+    local ns = vim.api.nvim_create_namespace("lazytree")
     for i, line in ipairs(lines) do
         local row = i - 1 -- 0-indexed
-        if i == 1 then
-            vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeHeader", row, 0, -1)
-        elseif i == 2 then
-            vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeSeparator", row, 0, -1)
+        if i <= header_lines then
+            vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeHeader", row, 0, -1)
         elseif line == "Keybindings: e = open file at line | q = close" then
-            vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeFooter", row, 0, -1)
+            vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeFooter", row, 0, -1)
         elseif meta[i] and line:match("^[├└│ ]") then
             -- Plugin line: highlight tree glyphs and line number
             local glyph_end = line:find("[%w]") or 0
             if glyph_end > 1 then
-                vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeGlyph", row, 0, glyph_end - 1)
+                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeGlyph", row, 0, glyph_end - 1)
             end
             local colon_pos = line:find(":%d+$")
             if colon_pos then
-                vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeLineNr", row, colon_pos - 1, -1)
+                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeLineNr", row, colon_pos - 1, -1)
             end
         elseif meta[i] and not line:match("^[├└│ ]") then
             -- File heading line
-            vim.api.nvim_buf_add_highlight(buf, ns, "PlugTreeFile", row, 0, -1)
+            vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeFile", row, 0, -1)
         end
     end
 end
