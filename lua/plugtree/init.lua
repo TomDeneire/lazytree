@@ -190,9 +190,46 @@ function M.open()
         local row = cursor[1]
         local entry = meta[row]
         if entry then
-            -- Close the plugtree window first, then open the file
-            vim.api.nvim_win_close(win, true)
-            vim.cmd("edit +" .. entry.lnum .. " " .. vim.fn.fnameescape(entry.file))
+            -- Read file content
+            local file_lines = {}
+            for line in io.lines(entry.file) do
+                file_lines[#file_lines + 1] = line
+            end
+
+            -- Create floating window
+            local width = math.floor(vim.o.columns * 0.8)
+            local height = math.floor(vim.o.lines * 0.8)
+            local float_buf = vim.api.nvim_create_buf(false, true)
+            vim.api.nvim_buf_set_lines(float_buf, 0, -1, false, file_lines)
+            vim.api.nvim_set_option_value("modifiable", false, { buf = float_buf })
+            vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = float_buf })
+
+            -- Detect filetype from extension for syntax highlighting
+            local ft = vim.filetype.match({ filename = entry.file }) or ""
+            if ft ~= "" then
+                vim.api.nvim_set_option_value("filetype", ft, { buf = float_buf })
+            end
+
+            local float_win = vim.api.nvim_open_win(float_buf, true, {
+                relative = "editor",
+                width = width,
+                height = height,
+                row = math.floor((vim.o.lines - height) / 2),
+                col = math.floor((vim.o.columns - width) / 2),
+                style = "minimal",
+                border = "rounded",
+                title = " " .. vim.fn.fnamemodify(entry.file, ":t") .. " ",
+                title_pos = "center",
+            })
+
+            -- Jump to the relevant line
+            vim.api.nvim_win_set_cursor(float_win, { entry.lnum, 0 })
+            vim.cmd("normal! zz")
+
+            -- Close float with q
+            vim.keymap.set("n", "q", function()
+                vim.api.nvim_win_close(float_win, true)
+            end, { buffer = float_buf, nowait = true })
         end
     end, { buffer = buf, nowait = true, desc = "PlugTree: open file at line" })
 
