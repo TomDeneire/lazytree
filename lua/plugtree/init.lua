@@ -55,8 +55,6 @@ function M.scan()
     local config_dir = vim.fn.stdpath("config")
     local init_path = config_dir .. "/init.lua"
 
-    -- Read init.lua to find { import = 'modules.X' } patterns
-    local modules = {}
     local f = io.open(init_path, "r")
     if not f then
         vim.notify("PlugTree: cannot read " .. init_path, vim.log.levels.ERROR)
@@ -65,22 +63,59 @@ function M.scan()
     local init_content = f:read("*a")
     f:close()
 
-    for mod in init_content:gmatch("import%s*=%s*['\"]([^'\"]+)['\"]") do
-        modules[#modules + 1] = mod
-    end
-
     local results = {}
 
-    for _, mod in ipairs(modules) do
-        -- Convert module path (e.g. "modules.editor") to directory path
-        local dir = config_dir .. "/lua/" .. mod:gsub("%.", "/")
-        local lua_files = vim.fn.glob(dir .. "/*.lua", false, true)
-        table.sort(lua_files)
+    -- Parse init.lua itself for plugin specs
+    local init_plugins = parse_file(init_path)
+    if init_plugins then
+        results[#results + 1] = {
+            file = "init.lua",
+            abs = init_path,
+            plugins = init_plugins,
+        }
+    end
 
-        for _, filepath in ipairs(lua_files) do
+    -- Collect spec directories from two patterns:
+    -- 1. { import = 'some.module' } directives
+    -- 2. require("lazy").setup("dirname") string shorthand
+    local dirs = {}
+
+    for mod in init_content:gmatch("import%s*=%s*['\"]([^'\"]+)['\"]") do
+        dirs[#dirs + 1] = config_dir .. "/lua/" .. mod:gsub("%.", "/")
+    end
+
+    -- Match require("lazy").setup("plugins") or require('lazy').setup('plugins')
+    local setup_str = init_content:match("require%s*%(%s*['\"]lazy['\"]%s*%)%s*%.%s*setup%s*%(%s*['\"]([^'\"]+)['\"]")
+    if setup_str then
+        dirs[#dirs + 1] = config_dir .. "/lua/" .. setup_str:gsub("%.", "/")
+    end
+
+    for _, dir in ipairs(dirs) do
+        -- Recursively glob all .lua files (lazy.nvim recurses into subdirs)
+        local lua_files = vim.fn.glob(dir .. "/**/*.lua", false, true)
+        -- Also include top-level .lua files (glob ** doesn't match zero dirs in all cases)
+        local top_files = vim.fn.glob(dir .. "/*.lua", false, true)
+        -- Merge and deduplicate
+        local seen = {}
+        local all_files = {}
+        for _, file in ipairs(top_files) do
+            if not seen[file] then
+                seen[file] = true
+                all_files[#all_files + 1] = file
+            end
+        end
+        for _, file in ipairs(lua_files) do
+            if not seen[file] then
+                seen[file] = true
+                all_files[#all_files + 1] = file
+            end
+        end
+        table.sort(all_files)
+
+        for _, filepath in ipairs(all_files) do
             local plugins = parse_file(filepath)
             if plugins then
-                -- Build relative path like "modules/editor/telescope.lua"
+                -- Build relative path from the lua/ directory
                 local rel = filepath:sub(#config_dir + #"/lua/" + 1)
                 results[#results + 1] = {
                     file = rel,
