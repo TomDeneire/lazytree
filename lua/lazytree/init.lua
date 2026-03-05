@@ -14,6 +14,11 @@ local function parse_file(filepath)
     local in_deps = false
 
     for i, line in ipairs(lines) do
+        -- Skip commented-out lines
+        if line:match("^%s*%-%-") then
+            goto continue
+        end
+
         -- Detect start of dependencies block
         if not in_deps and line:match("dependencies%s*=%s*{") then
             in_deps = true
@@ -57,6 +62,8 @@ local function parse_file(filepath)
         if name then
             results[#results + 1] = { name = name, line = i, is_dep = in_deps }
         end
+
+        ::continue::
     end
 
     if #results == 0 then
