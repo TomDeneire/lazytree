@@ -347,7 +347,7 @@ function M.render(scan_data, opts)
                 -- Main plugin line
                 local main_text = branch .. status_icon .. group.main.name
                 local line_suffix = ":" .. group.main.line
-                lines[#lines + 1] = main_text .. string.rep(" ", math.max(1, 60 - #main_text - #line_suffix)) .. line_suffix
+                lines[#lines + 1] = main_text .. string.rep(" ", math.max(1, 60 - vim.fn.strdisplaywidth(main_text) - #line_suffix)) .. line_suffix
                 meta[#lines] = { file = entry.abs, lnum = group.main.line, plugin_name = group.main.name }
 
                 local group_start = #lines
@@ -382,7 +382,7 @@ function M.render(scan_data, opts)
 
                     local dep_text = prefix .. dep_branch .. dep_status_icon .. dep.name
                     local dep_suffix = ":" .. dep.line
-                    local dep_line = dep_text .. string.rep(" ", math.max(1, 60 - #dep_text - #dep_suffix)) .. dep_suffix
+                    local dep_line = dep_text .. string.rep(" ", math.max(1, 60 - vim.fn.strdisplaywidth(dep_text) - #dep_suffix)) .. dep_suffix
                     if used_by ~= "" then
                         dep_line = dep_line .. used_by
                     end
