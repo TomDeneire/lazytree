@@ -260,6 +260,10 @@ function M.render(scan_data, opts)
         lines[#lines + 1] = h
     end
 
+    -- Keybindings bar right after header
+    lines[#lines + 1] = "Keybindings: e = open | q = close | za/zo/zc = fold | / = filter | gx = homepage | K = preview"
+    lines[#lines + 1] = ""
+
     local filter_lower = filter_text:lower()
 
     for _, entry in ipairs(scan_data) do
@@ -388,10 +392,6 @@ function M.render(scan_data, opts)
 
         ::continue_entry::
     end
-
-    -- Footer
-    local footer = "Keybindings: e = open | q = close | za/zo/zc = fold | / = filter | gx = homepage | K = preview"
-    lines[#lines + 1] = footer
 
     return lines, meta, #header, group_ranges
 end
