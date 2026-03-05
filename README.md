@@ -4,6 +4,8 @@ A Neovim plugin that gives you a tree-view map of all your [lazy.nvim](https://g
 
 As your Neovim config grows, you can easily lose sight of the import order of plugins, or it becomes hard to see which file imports which plugins. LazyTree makes it easy to navigate your plugin configuration and helps you debug your config.
 
+![LazyTree screenshot](lazytree.png)
+
 ## ✨ Features
 
 - 🔍 Scans your `init.lua` and all lazy.nvim spec directories
