@@ -145,11 +145,106 @@ function M.scan()
     return results
 end
 
+--- Feature 1: Get plugin load status from lazy.nvim
+local function get_plugin_status()
+    local ok, lazy = pcall(require, "lazy")
+    if not ok then
+        return {}
+    end
+    local status = {}
+    local plugins = lazy.plugins()
+    for _, plugin in ipairs(plugins) do
+        local short = plugin.name or (plugin[1] and plugin[1]:match("[^/]+$")) or ""
+        if plugin._.loaded then
+            status[short] = "loaded"
+        else
+            status[short] = "not_loaded"
+        end
+    end
+    return status
+end
+
+--- Feature 2: Build reverse dependency map from scan data
+local function build_reverse_deps(scan_data)
+    local reverse = {} -- dep_short_name -> { parent1, parent2, ... }
+    for _, entry in ipairs(scan_data) do
+        local groups = {}
+        for _, p in ipairs(entry.plugins) do
+            if not p.is_dep then
+                groups[#groups + 1] = { main = p, deps = {} }
+            else
+                if #groups > 0 then
+                    groups[#groups].deps[#groups[#groups].deps + 1] = p
+                end
+            end
+        end
+        for _, group in ipairs(groups) do
+            local parent = group.main.name:match("[^/]+$") or group.main.name
+            for _, dep in ipairs(group.deps) do
+                local dep_short = dep.name:match("[^/]+$") or dep.name
+                if not reverse[dep_short] then
+                    reverse[dep_short] = {}
+                end
+                -- Avoid duplicates
+                local found = false
+                for _, existing in ipairs(reverse[dep_short]) do
+                    if existing == parent then found = true; break end
+                end
+                if not found then
+                    reverse[dep_short][#reverse[dep_short] + 1] = parent
+                end
+            end
+        end
+    end
+    return reverse
+end
+
+--- Feature 7: Extract brace-matched spec block from a file starting at a given line
+local function extract_spec_block(filepath, start_line)
+    local file_lines = {}
+    for line in io.lines(filepath) do
+        file_lines[#file_lines + 1] = line
+    end
+
+    -- Find the opening brace on or near start_line
+    local brace_line = nil
+    for i = start_line, math.min(start_line + 5, #file_lines) do
+        if file_lines[i] and file_lines[i]:find("{") then
+            brace_line = i
+            break
+        end
+    end
+    if not brace_line then
+        return nil
+    end
+
+    local depth = 0
+    local result = {}
+    for i = brace_line, #file_lines do
+        result[#result + 1] = file_lines[i]
+        for _ in file_lines[i]:gmatch("{") do depth = depth + 1 end
+        for _ in file_lines[i]:gmatch("}") do depth = depth - 1 end
+        if depth <= 0 then
+            break
+        end
+    end
+    return result
+end
+
 --- Render scan data into display lines and a metadata table.
---- Returns (lines, meta, header_count) where meta[line_number] = { file, lnum } or nil.
-function M.render(scan_data)
+--- Returns (lines, meta, header_count, group_ranges) where:
+---   meta[line_number] = { file, lnum, plugin_name }
+---   group_ranges = list of { start_line, end_line } for cursor-follow highlights
+function M.render(scan_data, opts)
+    opts = opts or {}
+    local fold_state = opts.fold_state or {}
+    local filter_text = opts.filter_text or ""
+    local plugin_status = opts.plugin_status or {}
+    local reverse_deps = opts.reverse_deps or {}
+
     local lines = {}
     local meta = {}
+    local group_ranges = {}
 
     -- Header
     local header = {
@@ -165,13 +260,10 @@ function M.render(scan_data)
         lines[#lines + 1] = h
     end
 
-    for _, entry in ipairs(scan_data) do
-        -- File heading
-        lines[#lines + 1] = entry.file
-        meta[#lines] = { file = entry.abs, lnum = 1 }
+    local filter_lower = filter_text:lower()
 
+    for _, entry in ipairs(scan_data) do
         -- Separate main plugins and their dependencies
-        -- Group: each main plugin followed by deps until the next main plugin
         local groups = {}
         for _, p in ipairs(entry.plugins) do
             if not p.is_dep then
@@ -184,39 +276,127 @@ function M.render(scan_data)
             end
         end
 
-        for gi, group in ipairs(groups) do
-            local is_last_group = (gi == #groups)
-            local branch = is_last_group and "└── " or "├── "
-            local prefix = is_last_group and "    " or "│   "
+        -- Feature 4: Filter groups by search term
+        local filtered_groups = {}
+        if filter_text ~= "" then
+            for _, group in ipairs(groups) do
+                local match = group.main.name:lower():find(filter_lower, 1, true)
+                if not match then
+                    for _, dep in ipairs(group.deps) do
+                        if dep.name:lower():find(filter_lower, 1, true) then
+                            match = true
+                            break
+                        end
+                    end
+                end
+                if match then
+                    filtered_groups[#filtered_groups + 1] = group
+                end
+            end
+        else
+            filtered_groups = groups
+        end
 
-            -- Main plugin line
-            local main_text = branch .. group.main.name
-            local line_suffix = ":" .. group.main.line
-            lines[#lines + 1] = main_text .. string.rep(" ", math.max(1, 60 - #main_text - #line_suffix)) .. line_suffix
-            meta[#lines] = { file = entry.abs, lnum = group.main.line }
+        if #filtered_groups == 0 then
+            goto continue_entry
+        end
 
-            -- Dependency lines
-            for di, dep in ipairs(group.deps) do
-                local is_last_dep = (di == #group.deps)
-                local dep_branch = is_last_dep and "└── " or "├── "
-                local dep_text = prefix .. dep_branch .. dep.name
-                local dep_suffix = ":" .. dep.line
-                lines[#lines + 1] = dep_text .. string.rep(" ", math.max(1, 60 - #dep_text - #dep_suffix)) .. dep_suffix
-                meta[#lines] = { file = entry.abs, lnum = dep.line }
+        -- File heading
+        local heading_key = entry.file
+        local is_folded = fold_state[heading_key]
+
+        if is_folded then
+            -- Feature 3: Show folded heading with plugin count
+            local plugin_count = #filtered_groups
+            local dep_count = 0
+            for _, g in ipairs(filtered_groups) do
+                dep_count = dep_count + #g.deps
+            end
+            local total = plugin_count + dep_count
+            lines[#lines + 1] = entry.file .. "  [+" .. total .. " plugins]"
+            meta[#lines] = { file = entry.abs, lnum = 1, is_heading = true, heading_key = heading_key }
+        else
+            lines[#lines + 1] = entry.file
+            meta[#lines] = { file = entry.abs, lnum = 1, is_heading = true, heading_key = heading_key }
+
+            for gi, group in ipairs(filtered_groups) do
+                local is_last_group = (gi == #filtered_groups)
+                local branch = is_last_group and "└── " or "├── "
+                local prefix = is_last_group and "    " or "│   "
+
+                -- Feature 1: Status indicator
+                local short_name = group.main.name:match("[^/]+$") or group.main.name
+                local status_icon = ""
+                if plugin_status[short_name] == "loaded" then
+                    status_icon = "● "
+                elseif plugin_status[short_name] == "not_loaded" then
+                    status_icon = "○ "
+                end
+
+                -- Main plugin line
+                local main_text = branch .. status_icon .. group.main.name
+                local line_suffix = ":" .. group.main.line
+                lines[#lines + 1] = main_text .. string.rep(" ", math.max(1, 60 - #main_text - #line_suffix)) .. line_suffix
+                meta[#lines] = { file = entry.abs, lnum = group.main.line, plugin_name = group.main.name }
+
+                local group_start = #lines
+
+                -- Dependency lines
+                for di, dep in ipairs(group.deps) do
+                    local is_last_dep = (di == #group.deps)
+                    local dep_branch = is_last_dep and "└── " or "├── "
+
+                    -- Feature 1: Status indicator for dep
+                    local dep_short = dep.name:match("[^/]+$") or dep.name
+                    local dep_status_icon = ""
+                    if plugin_status[dep_short] == "loaded" then
+                        dep_status_icon = "● "
+                    elseif plugin_status[dep_short] == "not_loaded" then
+                        dep_status_icon = "○ "
+                    end
+
+                    -- Feature 2: Reverse dependency info
+                    local used_by = ""
+                    if reverse_deps[dep_short] then
+                        local users = {}
+                        for _, u in ipairs(reverse_deps[dep_short]) do
+                            if u ~= short_name then
+                                users[#users + 1] = u
+                            end
+                        end
+                        if #users > 0 then
+                            used_by = " (used by: " .. table.concat(users, ", ") .. ")"
+                        end
+                    end
+
+                    local dep_text = prefix .. dep_branch .. dep_status_icon .. dep.name
+                    local dep_suffix = ":" .. dep.line
+                    local dep_line = dep_text .. string.rep(" ", math.max(1, 60 - #dep_text - #dep_suffix)) .. dep_suffix
+                    if used_by ~= "" then
+                        dep_line = dep_line .. used_by
+                    end
+                    lines[#lines + 1] = dep_line
+                    meta[#lines] = { file = entry.abs, lnum = dep.line, plugin_name = dep.name }
+                end
+
+                group_ranges[#group_ranges + 1] = { start_line = group_start, end_line = #lines }
             end
         end
 
         -- Blank line between files
         lines[#lines + 1] = ""
+
+        ::continue_entry::
     end
 
     -- Footer
-    lines[#lines + 1] = "Keybindings: e = open file at line | q = close"
+    local footer = "Keybindings: e = open | q = close | za/zo/zc = fold | / = filter | gx = homepage | K = preview"
+    lines[#lines + 1] = footer
 
-    return lines, meta, #header
+    return lines, meta, #header, group_ranges
 end
 
---- Open the LazyTree buffer in a vertical split.
+--- Open the LazyTree buffer in a floating window.
 function M.open()
     local scan_data = M.scan()
     if #scan_data == 0 then
@@ -224,17 +404,17 @@ function M.open()
         return
     end
 
-    local lines, meta, header_lines = M.render(scan_data)
+    -- State
+    local fold_state = {}
+    local filter_text = ""
+    local plugin_status = get_plugin_status()
+    local reverse_deps = build_reverse_deps(scan_data)
 
     -- Create scratch buffer
     local buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
     vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
     vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
-
-    -- Write lines
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
 
     -- Open in floating window
     local width = math.floor(vim.o.columns * 0.8)
@@ -252,27 +432,131 @@ function M.open()
     -- Set filetype
     vim.api.nvim_set_option_value("filetype", "lazytree", { buf = buf })
 
-    -- Keymaps
+    -- Highlight definitions
+    vim.api.nvim_set_hl(0, "LazyTreeHeader", { bold = true, link = "Title" })
+    vim.api.nvim_set_hl(0, "LazyTreeFile", { bold = true, link = "Directory" })
+    vim.api.nvim_set_hl(0, "LazyTreeGlyph", { link = "NonText" })
+    vim.api.nvim_set_hl(0, "LazyTreeLineNr", { link = "LineNr" })
+    vim.api.nvim_set_hl(0, "LazyTreeFooter", { link = "Comment" })
+    vim.api.nvim_set_hl(0, "LazyTreeLoaded", { fg = "#a6e3a1", bold = true })
+    vim.api.nvim_set_hl(0, "LazyTreeNotLoaded", { fg = "#6c7086" })
+    vim.api.nvim_set_hl(0, "LazyTreeUsedBy", { fg = "#cba6f7", italic = true })
+    vim.api.nvim_set_hl(0, "LazyTreeCursorGroup", { bg = "#313244" })
+
+    local ns = vim.api.nvim_create_namespace("lazytree")
+    local ns_cursor = vim.api.nvim_create_namespace("lazytree_cursor")
+
+    -- Current metadata and group_ranges (updated by refresh)
+    local meta = {}
+    local header_lines = 0
+    local group_ranges = {}
+
+    --- Refresh: re-render buffer from current state
+    local function refresh()
+        local cursor_pos = nil
+        if vim.api.nvim_win_is_valid(win) then
+            cursor_pos = vim.api.nvim_win_get_cursor(win)
+        end
+
+        local lines
+        lines, meta, header_lines, group_ranges = M.render(scan_data, {
+            fold_state = fold_state,
+            filter_text = filter_text,
+            plugin_status = plugin_status,
+            reverse_deps = reverse_deps,
+        })
+
+        vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+        vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+
+        -- Apply highlights
+        vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+        for i, line in ipairs(lines) do
+            local row = i - 1
+            if i <= header_lines then
+                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeHeader", row, 0, -1)
+            elseif line:match("^Keybindings:") then
+                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeFooter", row, 0, -1)
+            elseif meta[i] and meta[i].is_heading then
+                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeFile", row, 0, -1)
+            elseif meta[i] and line:match("^[├└│ ]") then
+                -- Tree glyphs
+                local glyph_end = line:find("[%w●○]") or 0
+                if glyph_end > 1 then
+                    vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeGlyph", row, 0, glyph_end - 1)
+                end
+                -- Status indicator
+                local loaded_pos = line:find("● ")
+                local notloaded_pos = line:find("○ ")
+                if loaded_pos then
+                    vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeLoaded", row, loaded_pos - 1, loaded_pos + #"●" - 1 + 1)
+                elseif notloaded_pos then
+                    vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeNotLoaded", row, notloaded_pos - 1, notloaded_pos + #"○" - 1 + 1)
+                end
+                -- Line number suffix
+                local colon_pos = line:find(":%d+")
+                if colon_pos then
+                    -- Find the end of the line number part (before any "used by" text)
+                    local num_end = line:find("[^%d]", colon_pos + 1) or (#line + 1)
+                    vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeLineNr", row, colon_pos - 1, num_end - 1)
+                end
+                -- "used by" annotation
+                local ub_start = line:find("%(used by:")
+                if ub_start then
+                    vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeUsedBy", row, ub_start - 1, -1)
+                end
+            end
+        end
+
+        -- Restore cursor
+        if cursor_pos and vim.api.nvim_win_is_valid(win) then
+            local max_line = vim.api.nvim_buf_line_count(buf)
+            local row = math.min(cursor_pos[1], max_line)
+            vim.api.nvim_win_set_cursor(win, { row, cursor_pos[2] })
+        end
+    end
+
+    -- Initial render
+    refresh()
+
+    -- Feature 5: Cursor-follow group highlights
+    vim.api.nvim_create_autocmd("CursorMoved", {
+        buffer = buf,
+        callback = function()
+            vim.api.nvim_buf_clear_namespace(buf, ns_cursor, 0, -1)
+            if not vim.api.nvim_win_is_valid(win) then return end
+            local cursor = vim.api.nvim_win_get_cursor(win)
+            local row = cursor[1]
+            for _, range in ipairs(group_ranges) do
+                if row >= range.start_line and row <= range.end_line then
+                    for r = range.start_line, range.end_line do
+                        vim.api.nvim_buf_add_highlight(buf, ns_cursor, "LazyTreeCursorGroup", r - 1, 0, -1)
+                    end
+                    break
+                end
+            end
+        end,
+    })
+
+    -- Keymap: e = open file at line
     vim.keymap.set("n", "e", function()
         local cursor = vim.api.nvim_win_get_cursor(win)
         local row = cursor[1]
         local entry = meta[row]
         if entry then
-            -- Read file content
             local file_lines = {}
             for line in io.lines(entry.file) do
                 file_lines[#file_lines + 1] = line
             end
 
-            -- Create floating window
-            local width = math.floor(vim.o.columns * 0.8)
-            local height = math.floor(vim.o.lines * 0.8)
+            local fw = math.floor(vim.o.columns * 0.8)
+            local fh = math.floor(vim.o.lines * 0.8)
             local float_buf = vim.api.nvim_create_buf(false, true)
             vim.api.nvim_buf_set_lines(float_buf, 0, -1, false, file_lines)
             vim.api.nvim_set_option_value("modifiable", false, { buf = float_buf })
             vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = float_buf })
 
-            -- Detect filetype from extension for syntax highlighting
             local ft = vim.filetype.match({ filename = entry.file }) or ""
             if ft ~= "" then
                 vim.api.nvim_set_option_value("filetype", ft, { buf = float_buf })
@@ -280,61 +564,136 @@ function M.open()
 
             local float_win = vim.api.nvim_open_win(float_buf, true, {
                 relative = "editor",
-                width = width,
-                height = height,
-                row = math.floor((vim.o.lines - height) / 2),
-                col = math.floor((vim.o.columns - width) / 2),
+                width = fw,
+                height = fh,
+                row = math.floor((vim.o.lines - fh) / 2),
+                col = math.floor((vim.o.columns - fw) / 2),
                 style = "minimal",
                 border = "rounded",
                 title = " " .. vim.fn.fnamemodify(entry.file, ":t") .. " ",
                 title_pos = "center",
             })
 
-            -- Jump to the relevant line
             vim.api.nvim_win_set_cursor(float_win, { entry.lnum, 0 })
             vim.cmd("normal! zz")
 
-            -- Close float with q
             vim.keymap.set("n", "q", function()
                 vim.api.nvim_win_close(float_win, true)
             end, { buffer = float_buf, nowait = true })
         end
     end, { buffer = buf, nowait = true, desc = "LazyTree: open file at line" })
 
+    -- Keymap: q = close
     vim.keymap.set("n", "q", function()
         vim.api.nvim_win_close(win, true)
     end, { buffer = buf, nowait = true, desc = "LazyTree: close" })
 
-    -- Highlights
-    vim.api.nvim_set_hl(0, "LazyTreeHeader", { bold = true, link = "Title" })
-    vim.api.nvim_set_hl(0, "LazyTreeFile", { bold = true, link = "Directory" })
-    vim.api.nvim_set_hl(0, "LazyTreeGlyph", { link = "NonText" })
-    vim.api.nvim_set_hl(0, "LazyTreeLineNr", { link = "LineNr" })
-    vim.api.nvim_set_hl(0, "LazyTreeFooter", { link = "Comment" })
-
-    -- Apply highlights
-    local ns = vim.api.nvim_create_namespace("lazytree")
-    for i, line in ipairs(lines) do
-        local row = i - 1 -- 0-indexed
-        if i <= header_lines then
-            vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeHeader", row, 0, -1)
-        elseif line == "Keybindings: e = open file at line | q = close" then
-            vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeFooter", row, 0, -1)
-        elseif meta[i] and line:match("^[├└│ ]") then
-            -- Plugin line: highlight tree glyphs and line number
-            local glyph_end = line:find("[%w]") or 0
-            if glyph_end > 1 then
-                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeGlyph", row, 0, glyph_end - 1)
-            end
-            local colon_pos = line:find(":%d+$")
-            if colon_pos then
-                vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeLineNr", row, colon_pos - 1, -1)
-            end
-        elseif meta[i] and not line:match("^[├└│ ]") then
-            -- File heading line
-            vim.api.nvim_buf_add_highlight(buf, ns, "LazyTreeFile", row, 0, -1)
+    -- Feature 3: Fold keybindings
+    local function get_heading_at_cursor()
+        local cursor = vim.api.nvim_win_get_cursor(win)
+        local row = cursor[1]
+        -- If on a heading, use it directly
+        if meta[row] and meta[row].is_heading then
+            return meta[row].heading_key
         end
+        -- Otherwise walk upward to find the heading for this section
+        for r = row, 1, -1 do
+            if meta[r] and meta[r].is_heading then
+                return meta[r].heading_key
+            end
+        end
+        return nil
     end
+
+    vim.keymap.set("n", "za", function()
+        local key = get_heading_at_cursor()
+        if key then
+            fold_state[key] = not fold_state[key]
+            refresh()
+        end
+    end, { buffer = buf, nowait = true, desc = "LazyTree: toggle fold" })
+
+    vim.keymap.set("n", "zc", function()
+        local key = get_heading_at_cursor()
+        if key then
+            fold_state[key] = true
+            refresh()
+        end
+    end, { buffer = buf, nowait = true, desc = "LazyTree: fold section" })
+
+    vim.keymap.set("n", "zo", function()
+        local key = get_heading_at_cursor()
+        if key then
+            fold_state[key] = false
+            refresh()
+        end
+    end, { buffer = buf, nowait = true, desc = "LazyTree: unfold section" })
+
+    -- Feature 4: Filter with /
+    vim.keymap.set("n", "/", function()
+        local input = vim.fn.input("Filter: ", filter_text)
+        filter_text = input or ""
+        refresh()
+    end, { buffer = buf, nowait = true, desc = "LazyTree: filter plugins" })
+
+    -- Feature 6: Open plugin homepage with gx
+    vim.keymap.set("n", "gx", function()
+        local cursor = vim.api.nvim_win_get_cursor(win)
+        local row = cursor[1]
+        local entry = meta[row]
+        if not entry or not entry.plugin_name then return end
+        local name = entry.plugin_name
+        -- Check if it looks like owner/repo
+        if not name:match("/") then
+            vim.notify("LazyTree: no GitHub URL for " .. name, vim.log.levels.WARN)
+            return
+        end
+        local url = "https://github.com/" .. name
+        if vim.ui.open then
+            vim.ui.open(url)
+        else
+            local cmd = vim.fn.has("mac") == 1 and "open" or "xdg-open"
+            vim.fn.jobstart({ cmd, url }, { detach = true })
+        end
+    end, { buffer = buf, nowait = true, desc = "LazyTree: open plugin homepage" })
+
+    -- Feature 7: Config snippet preview with K
+    vim.keymap.set("n", "K", function()
+        local cursor = vim.api.nvim_win_get_cursor(win)
+        local row = cursor[1]
+        local entry = meta[row]
+        if not entry or not entry.lnum then return end
+
+        local spec_lines = extract_spec_block(entry.file, entry.lnum)
+        if not spec_lines then
+            vim.notify("LazyTree: could not extract spec block", vim.log.levels.WARN)
+            return
+        end
+
+        local preview_buf = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, spec_lines)
+        vim.api.nvim_set_option_value("modifiable", false, { buf = preview_buf })
+        vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = preview_buf })
+        vim.api.nvim_set_option_value("filetype", "lua", { buf = preview_buf })
+
+        local pw = math.min(80, math.floor(vim.o.columns * 0.6))
+        local ph = math.min(#spec_lines + 2, math.floor(vim.o.lines * 0.5))
+        local preview_win = vim.api.nvim_open_win(preview_buf, true, {
+            relative = "editor",
+            width = pw,
+            height = ph,
+            row = math.floor((vim.o.lines - ph) / 2),
+            col = math.floor((vim.o.columns - pw) / 2),
+            style = "minimal",
+            border = "rounded",
+            title = " Spec Preview ",
+            title_pos = "center",
+        })
+
+        vim.keymap.set("n", "q", function()
+            vim.api.nvim_win_close(preview_win, true)
+        end, { buffer = preview_buf, nowait = true })
+    end, { buffer = buf, nowait = true, desc = "LazyTree: preview spec" })
 end
 
 return M
