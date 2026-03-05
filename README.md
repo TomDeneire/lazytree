@@ -27,7 +27,7 @@ With lazy.nvim:
 
 ```lua
 {
-    "tdeneire/lazytree",
+    "TomDeneire/lazytree",
     cmd = "LazyTree",
     opts = {},
 }
@@ -69,4 +69,4 @@ All highlights link to standard groups by default and can be overridden:
 
 ## 🤖 About
 
-This plugin was entirely coded by [Claude](https://claude.ai) (Anthropic's AI assistant), with direction and testing by [@tdeneire](https://github.com/tdeneire).
+This plugin was entirely coded by [Claude](https://claude.ai) (Anthropic's AI assistant), with direction and testing by [@TomDeneire](https://github.com/TomDeneire).
