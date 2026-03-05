@@ -557,6 +557,8 @@ function M.open()
         local entry = meta[row]
         if not entry then return end
 
+        local is_new = vim.fn.bufnr(entry.file) == -1
+
         local scratch = vim.api.nvim_create_buf(false, true)
         vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = scratch })
 
@@ -576,6 +578,11 @@ function M.open()
 
         vim.cmd("edit " .. vim.fn.fnameescape(entry.file))
         local file_buf = vim.api.nvim_get_current_buf()
+
+        -- Auto-wipe buffer when float closes if it didn't exist before
+        if is_new then
+            vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = file_buf })
+        end
 
         local line_count = vim.api.nvim_buf_line_count(file_buf)
         local target_line = math.min(entry.lnum, line_count)
