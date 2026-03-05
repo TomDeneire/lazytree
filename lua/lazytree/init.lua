@@ -1,5 +1,9 @@
 local M = {}
 
+function M.setup(opts)
+    opts = opts or {}
+end
+
 --- Parse a single spec file for plugin names.
 --- Returns a list of { name, line, is_dep } entries, or nil if no plugins found.
 local function parse_file(filepath)
@@ -268,7 +272,7 @@ function M.render(scan_data, opts)
     end
 
     -- Keybindings bar right after header
-    lines[#lines + 1] = "Keybindings: e = open | q = close | za/zo/zc = fold | / = filter | gx = homepage | K = preview"
+    lines[#lines + 1] = "Keybindings: e = edit | q/<Esc> = close | za/zo/zc = fold | / = filter | gx = homepage | K = preview"
     lines[#lines + 1] = ""
 
     local filter_lower = filter_text:lower()
@@ -440,15 +444,15 @@ function M.open()
     vim.api.nvim_set_option_value("filetype", "lazytree", { buf = buf })
 
     -- Highlight definitions
-    vim.api.nvim_set_hl(0, "LazyTreeHeader", { bold = true, link = "Title" })
-    vim.api.nvim_set_hl(0, "LazyTreeFile", { bold = true, link = "Directory" })
-    vim.api.nvim_set_hl(0, "LazyTreeGlyph", { link = "NonText" })
-    vim.api.nvim_set_hl(0, "LazyTreeLineNr", { link = "LineNr" })
-    vim.api.nvim_set_hl(0, "LazyTreeFooter", { link = "Comment" })
-    vim.api.nvim_set_hl(0, "LazyTreeLoaded", { bold = true, link = "DiagnosticOk" })
-    vim.api.nvim_set_hl(0, "LazyTreeNotLoaded", { link = "Comment" })
-    vim.api.nvim_set_hl(0, "LazyTreeUsedBy", { italic = true, link = "Special" })
-    vim.api.nvim_set_hl(0, "LazyTreeCursorGroup", { link = "CursorLine" })
+    vim.api.nvim_set_hl(0, "LazyTreeHeader", { default = true, bold = true, link = "Title" })
+    vim.api.nvim_set_hl(0, "LazyTreeFile", { default = true, bold = true, link = "Directory" })
+    vim.api.nvim_set_hl(0, "LazyTreeGlyph", { default = true, link = "NonText" })
+    vim.api.nvim_set_hl(0, "LazyTreeLineNr", { default = true, link = "LineNr" })
+    vim.api.nvim_set_hl(0, "LazyTreeFooter", { default = true, link = "Comment" })
+    vim.api.nvim_set_hl(0, "LazyTreeLoaded", { default = true, bold = true, link = "DiagnosticOk" })
+    vim.api.nvim_set_hl(0, "LazyTreeNotLoaded", { default = true, link = "Comment" })
+    vim.api.nvim_set_hl(0, "LazyTreeUsedBy", { default = true, italic = true, link = "Special" })
+    vim.api.nvim_set_hl(0, "LazyTreeCursorGroup", { default = true, link = "CursorLine" })
 
     local ns = vim.api.nvim_create_namespace("lazytree")
     local ns_cursor = vim.api.nvim_create_namespace("lazytree_cursor")
@@ -546,54 +550,54 @@ function M.open()
         end,
     })
 
-    -- Keymap: e = open file at line
+    -- Keymap: e = open file in float (real buffer, editable)
     vim.keymap.set("n", "e", function()
         local cursor = vim.api.nvim_win_get_cursor(win)
         local row = cursor[1]
         local entry = meta[row]
-        if entry then
-            local file_lines = {}
-            for line in io.lines(entry.file) do
-                file_lines[#file_lines + 1] = line
+        if not entry then return end
+
+        local scratch = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = scratch })
+
+        local fw = math.floor(vim.o.columns * 0.8)
+        local fh = math.floor(vim.o.lines * 0.8)
+        local file_win = vim.api.nvim_open_win(scratch, true, {
+            relative = "editor",
+            width = fw,
+            height = fh,
+            row = math.floor((vim.o.lines - fh) / 2),
+            col = math.floor((vim.o.columns - fw) / 2),
+            style = "minimal",
+            border = "rounded",
+            title = " " .. vim.fn.fnamemodify(entry.file, ":t") .. " ",
+            title_pos = "center",
+        })
+
+        vim.cmd("edit " .. vim.fn.fnameescape(entry.file))
+        local file_buf = vim.api.nvim_get_current_buf()
+
+        local line_count = vim.api.nvim_buf_line_count(file_buf)
+        local target_line = math.min(entry.lnum, line_count)
+        vim.api.nvim_win_set_cursor(file_win, { target_line, 0 })
+        vim.cmd("normal! zz")
+
+        -- q closes the file float, returning to LazyTree
+        local function close_file()
+            pcall(vim.keymap.del, "n", "q", { buffer = file_buf })
+            if vim.api.nvim_win_is_valid(file_win) then
+                vim.api.nvim_win_close(file_win, true)
             end
-
-            local fw = math.floor(vim.o.columns * 0.8)
-            local fh = math.floor(vim.o.lines * 0.8)
-            local float_buf = vim.api.nvim_create_buf(false, true)
-            vim.api.nvim_buf_set_lines(float_buf, 0, -1, false, file_lines)
-            vim.api.nvim_set_option_value("modifiable", false, { buf = float_buf })
-            vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = float_buf })
-
-            local ft = vim.filetype.match({ filename = entry.file }) or ""
-            if ft ~= "" then
-                vim.api.nvim_set_option_value("filetype", ft, { buf = float_buf })
-            end
-
-            local float_win = vim.api.nvim_open_win(float_buf, true, {
-                relative = "editor",
-                width = fw,
-                height = fh,
-                row = math.floor((vim.o.lines - fh) / 2),
-                col = math.floor((vim.o.columns - fw) / 2),
-                style = "minimal",
-                border = "rounded",
-                title = " " .. vim.fn.fnamemodify(entry.file, ":t") .. " ",
-                title_pos = "center",
-            })
-
-            vim.api.nvim_win_set_cursor(float_win, { entry.lnum, 0 })
-            vim.cmd("normal! zz")
-
-            vim.keymap.set("n", "q", function()
-                vim.api.nvim_win_close(float_win, true)
-            end, { buffer = float_buf, nowait = true })
         end
+        vim.keymap.set("n", "q", close_file, { buffer = file_buf, nowait = true })
     end, { buffer = buf, nowait = true, desc = "LazyTree: open file at line" })
 
-    -- Keymap: q = close
-    vim.keymap.set("n", "q", function()
+    -- Keymap: q / <Esc> = close
+    local function close()
         vim.api.nvim_win_close(win, true)
-    end, { buffer = buf, nowait = true, desc = "LazyTree: close" })
+    end
+    vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, desc = "LazyTree: close" })
+    vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true, desc = "LazyTree: close" })
 
     -- Feature 3: Fold keybindings
     local function get_heading_at_cursor()
@@ -697,9 +701,11 @@ function M.open()
             title_pos = "center",
         })
 
-        vim.keymap.set("n", "q", function()
+        local function close_preview()
             vim.api.nvim_win_close(preview_win, true)
-        end, { buffer = preview_buf, nowait = true })
+        end
+        vim.keymap.set("n", "q", close_preview, { buffer = preview_buf, nowait = true })
+        vim.keymap.set("n", "<Esc>", close_preview, { buffer = preview_buf, nowait = true })
     end, { buffer = buf, nowait = true, desc = "LazyTree: preview spec" })
 end
 
