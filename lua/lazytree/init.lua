@@ -105,14 +105,47 @@ function M.scan()
     -- Collect spec directories from two patterns:
     -- 1. { import = 'some.module' } directives
     -- 2. require("lazy").setup("dirname") string shorthand
+    --
+    -- If init.lua doesn't contain the lazy setup directly (e.g. LazyVim starter
+    -- delegates to config.lazy), follow require() calls to find the actual setup file.
+    local content_to_scan = init_content
+    local setup_file_path = init_path
+
+    if not content_to_scan:match("require%s*%(%s*['\"]lazy['\"]") and not content_to_scan:match("import%s*=%s*['\"]") then
+        -- Follow require calls like require("config.lazy")
+        for mod in init_content:gmatch("require%s*%(%s*['\"]([^'\"]+)['\"]%s*%)") do
+            local candidate = config_dir .. "/lua/" .. mod:gsub("%.", "/") .. ".lua"
+            local cf = io.open(candidate, "r")
+            if cf then
+                local candidate_content = cf:read("*a")
+                cf:close()
+                if candidate_content:match("require%s*%(%s*['\"]lazy['\"]") or candidate_content:match("import%s*=%s*['\"]") then
+                    content_to_scan = candidate_content
+                    setup_file_path = candidate
+                    -- Also parse this file for plugin specs
+                    local extra_plugins = parse_file(candidate)
+                    if extra_plugins then
+                        local rel = candidate:sub(#config_dir + #"/lua/" + 1)
+                        results[#results + 1] = {
+                            file = rel,
+                            abs = candidate,
+                            plugins = extra_plugins,
+                        }
+                    end
+                    break
+                end
+            end
+        end
+    end
+
     local dirs = {}
 
-    for mod in init_content:gmatch("import%s*=%s*['\"]([^'\"]+)['\"]") do
+    for mod in content_to_scan:gmatch("import%s*=%s*['\"]([^'\"]+)['\"]") do
         dirs[#dirs + 1] = config_dir .. "/lua/" .. mod:gsub("%.", "/")
     end
 
     -- Match require("lazy").setup("plugins") or require('lazy').setup('plugins')
-    local setup_str = init_content:match("require%s*%(%s*['\"]lazy['\"]%s*%)%s*%.%s*setup%s*%(%s*['\"]([^'\"]+)['\"]")
+    local setup_str = content_to_scan:match("require%s*%(%s*['\"]lazy['\"]%s*%)%s*%.%s*setup%s*%(%s*['\"]([^'\"]+)['\"]")
     if setup_str then
         dirs[#dirs + 1] = config_dir .. "/lua/" .. setup_str:gsub("%.", "/")
     end
